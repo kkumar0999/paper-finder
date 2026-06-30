@@ -2,12 +2,24 @@ import numpy as np
 import streamlit as st
 import requests
 import time
+import feedparser
 from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "BAAI/bge-m3" # Name of the model used for the word embedding
-URL = "https://api.semanticscholar.org/graph/v1/paper/search" # Database URL
+URL = "https://export.arxiv.org/api/query" # Database URL
 
-def get_papers(query, count=500, batch_limit=100, cooldown=3.5, rate_cooldown=10):
+def find_papers(query):
+    #model = load_embedding_model(MODEL_NAME)
+    papers = get_papers(query)
+    print(papers)
+
+def countdown(fmt, seconds, end="\n"):
+    for time_left in range(seconds, 0, -1):
+        print(f"\r{fmt.format(time_left)}", end="")
+        time.sleep(1)
+    print(end=end)
+
+def get_papers(query, count=500, batch_limit=50, cooldown=4, rate_cooldown=15):
     """
     Returns a list of requested papers from the database.
 
@@ -35,28 +47,41 @@ def get_papers(query, count=500, batch_limit=100, cooldown=3.5, rate_cooldown=10
         
         # Parameters for database query
         params = {
-            "query": query,
-            "limit": limit,
-            "offset": offset,
-            "fields": "title,abstract,embedding.specter_v2,citations.paperId,references.paperId"
+            "search_query": f"all:{query}",
+            "max_results": limit,
+            "start": offset,
         }
 
         response = requests.get(URL, params=params) # Gets response from database
         success = False # Boolean flag for if the request succeeded or not
 
         if response.status_code == 200: # All good
-            data = response.json().get("data", []) # Defaults to an empty list if it doesn't exist
-            papers.extend(data)
+            feed = feedparser.parse(response.text)
+            for entry in feed.entries:
+                paper_data = {
+                    "paperId": entry.id.split("/abs/")[-1],
+                    "title": entry.title,
+                    "abstract": entry.summary
+                }
+                papers.append(paper_data)
+
             success = True
         elif response.status_code == 429: # Rate limited
-            print(f"Rate limited, retrying after {rate_cooldown} seconds...")
+            countdown("Rate limited, retrying after {} seconds...", rate_cooldown)
             time.sleep(rate_cooldown)
 
             # Retries query
             response = requests.get(URL, params=params)
             if response.status_code == 200: # All good
-                data = response.json().get("data", []) # Defaults to an empty list if it doesn't exist
-                papers.extend(data)
+                feed = feedparser.parse(response.text)
+                for entry in feed.entries:
+                    paper_data = {
+                        "paperId": entry.id.split("/abs/")[-1],
+                        "title": entry.title,
+                        "abstract": entry.summary
+                    }
+                    papers.append(paper_data)
+
                 success = True
             else:
                 print("Retry failed, will retry this request in the next loop.")
@@ -68,7 +93,7 @@ def get_papers(query, count=500, batch_limit=100, cooldown=3.5, rate_cooldown=10
             page += 1
             papers_left -= limit
 
-        time.sleep(cooldown) # Waits to prevent rate limiting
+        countdown("Cooldown: {} second(s) left...", cooldown) # Waits to prevent rate limiting
     
     return papers
 
@@ -97,3 +122,5 @@ def calc_similarity_scores(query_vec, paper_matrix):
 
     similarity_scores = np.dot(paper_matrix, query_vec) # Calculates the dot products
     return similarity_scores
+
+find_papers("Autonomous vehicles")
